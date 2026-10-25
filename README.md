@@ -16,6 +16,7 @@ pnpm install
 pnpm build    # every plugin into dist/<id>/
 pnpm check    # tsc
 pnpm lint
+pnpm test     # vitest, with `obsidian` aliased to test/obsidian.ts
 pnpm vault    # build, then copy dist/<id>/ into $OBSIDIAN_VAULT/.obsidian/plugins/<id>/
 ```
 

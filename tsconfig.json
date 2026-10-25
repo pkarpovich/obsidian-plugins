@@ -14,5 +14,5 @@
     "noEmit": true,
     "types": []
   },
-  "include": ["plugins/*/src/**/*.ts"]
+  "include": ["plugins/*/src/**/*.ts", "test/**/*.ts"]
 }
