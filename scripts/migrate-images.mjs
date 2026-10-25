@@ -86,7 +86,9 @@ for (const [name, users] of usedBy) {
 const unused = [...byName.keys()].filter((name) => !usedBy.has(name));
 const megabytes = (bytes) => (bytes / 1048576).toFixed(1);
 for (const image of images) {
-  console.log(`${relative(vault, image.path)}\t${megabytes(image.size)} MB\t${image.users.length} note(s)\t${image.url}`);
+  console.log(
+    `${relative(vault, image.path)}\t${megabytes(image.size)} MB\t${image.users.length} note(s)\t${image.url}`,
+  );
 }
 console.log(
   `\n${images.length} images, ${megabytes(images.reduce((sum, image) => sum + image.size, 0))} MB, used by ${new Set(images.flatMap((image) => image.users)).size} notes`,
