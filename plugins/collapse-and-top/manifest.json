@@ -1,0 +1,9 @@
+{
+  "id": "collapse-and-top",
+  "name": "Collapse and Top",
+  "version": "1.0.0",
+  "minAppVersion": "1.13.0",
+  "description": "Collapse every folder in the file explorer and scroll it back to the top.",
+  "author": "Pavel Karpovich",
+  "isDesktopOnly": false
+}
