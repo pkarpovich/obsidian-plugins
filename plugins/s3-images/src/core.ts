@@ -16,7 +16,8 @@ export function extensionOf(file: { name: string; type: string }): string {
     return known;
   }
   const dot = file.name.lastIndexOf('.');
-  return dot > 0 ? file.name.slice(dot + 1).toLowerCase() : 'bin';
+  const extension = dot > 0 ? file.name.slice(dot + 1).toLowerCase() : 'bin';
+  return extension === 'jpeg' ? 'jpg' : extension;
 }
 
 export function contentTypeOf(extension: string): string {

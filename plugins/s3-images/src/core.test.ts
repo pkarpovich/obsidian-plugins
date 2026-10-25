@@ -15,6 +15,7 @@ describe('core', () => {
     expect(extensionOf({ name: 'Screen Shot.PNG', type: 'image/png' })).toBe('png');
     expect(extensionOf({ name: 'photo.jpeg', type: 'image/jpeg' })).toBe('jpg');
     expect(extensionOf({ name: 'scan.TIFF', type: '' })).toBe('tiff');
+    expect(extensionOf({ name: 'Cover.JPEG', type: '' })).toBe('jpg');
     expect(extensionOf({ name: 'blob', type: '' })).toBe('bin');
   });
 
