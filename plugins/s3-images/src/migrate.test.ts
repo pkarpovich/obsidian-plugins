@@ -37,6 +37,15 @@ describe('rewriteImageRefs', () => {
     expect(targets).toEqual(['cover.jpg', 'Attachments/shot.png']);
   });
 
+  it('turns a bare image file name in a property into a quoted url', () => {
+    const note = '---\ncover: cover.jpg\nbanner: "Attachments/shot.png"\ntitle: shot.png notes\n---\nbody';
+    const { content, targets } = rewriteImageRefs(note, urlFor);
+    expect(content).toBe(
+      '---\ncover: "https://s3.example/obsidian/2026-09/bbb.jpg"\nbanner: "https://s3.example/obsidian/2026-10/aaa.png"\ntitle: shot.png notes\n---\nbody',
+    );
+    expect(targets).toEqual(['cover.jpg', 'Attachments/shot.png']);
+  });
+
   it('leaves links to notes, unknown images and remote images alone', () => {
     const note = '![[Some note]] ![[other.png]] ![](https://example.com/x.png) [[shot.png]]';
     expect(rewriteImageRefs(note, urlFor)).toEqual({ content: note, targets: [] });

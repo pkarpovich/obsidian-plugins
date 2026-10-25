@@ -6,6 +6,7 @@ export interface Rewrite {
 const SIZE = /^\d+(x\d+)?$/;
 const FRONTMATTER = /^---\n[\s\S]*?\n---(?=\n|$)/;
 const PROPERTY_LINK = /^([\w-]+):[ \t]*"?\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]"?[ \t]*$/gm;
+const PROPERTY_FILE = /^([\w-]+):[ \t]*"?([^"[\]\n:]+\.(?:png|jpe?g|gif|webp|heic|avif|svg))"?[ \t]*$/gim;
 const WIKI_EMBED = /!\[\[([^\]|#]+)(?:\|([^\]]*))?\]\]/g;
 const MARKDOWN_EMBED = /!\[([^\]]*)\]\(([^)\s]+)\)/g;
 
@@ -28,10 +29,11 @@ export function rewriteImageRefs(content: string, urlFor: (target: string) => st
   };
 
   const frontmatter = FRONTMATTER.exec(content)?.[0] ?? '';
-  const properties = frontmatter.replace(PROPERTY_LINK, (line, key: string, target: string) => {
+  const toUrl = (line: string, key: string, target: string): string => {
     const url = resolve(target.trim());
     return url ? `${key}: "${url}"` : line;
-  });
+  };
+  const properties = frontmatter.replace(PROPERTY_LINK, toUrl).replace(PROPERTY_FILE, toUrl);
 
   const body = content
     .slice(frontmatter.length)
