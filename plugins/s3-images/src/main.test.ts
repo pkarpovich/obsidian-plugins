@@ -32,6 +32,7 @@ function setup() {
   const files = new Map<string, ArrayBuffer>();
   const notes = new Map<string, string>();
   const embeds = new Map<string, { link: string; original: string }[]>();
+  const links = new Map<string, { link: string; original: string }[]>();
   const createBinary = vi.fn(async (path: string, data: ArrayBuffer) => {
     files.set(path, data);
     return tfile(path);
@@ -57,19 +58,20 @@ function setup() {
     },
     fileManager: {
       getAvailablePathForAttachment: async (name: string) => `Attachments/${name}`,
-      generateMarkdownLink: (file: FakeFile) => `[[${file.name}]]`,
+      generateMarkdownLink: (file: FakeFile, _source: string, _subpath?: string, alias?: string) =>
+        `[[${file.name}${alias ? `|${alias}` : ''}]]`,
       trashFile: async (file: FakeFile) => {
         files.delete(file.path);
       },
     },
     metadataCache: {
-      getFileCache: (file: FakeFile) => ({ embeds: embeds.get(file.path) ?? [] }),
+      getFileCache: (file: FakeFile) => ({ embeds: embeds.get(file.path) ?? [], links: links.get(file.path) ?? [] }),
       getFirstLinkpathDest: (link: string) => [...files.keys()].map(tfile).find((file) => file.name === link) ?? null,
     },
   } as unknown as App;
 
   const plugin = new S3Images(app, {} as PluginManifest);
-  return { plugin, handlers, files, notes, embeds, createBinary };
+  return { plugin, handlers, files, notes, embeds, links, createBinary };
 }
 
 function editor(initial = '') {
@@ -105,6 +107,13 @@ async function start(bucketUrl = BUCKET) {
   await context.plugin.onload();
   return context;
 }
+
+const pdf = () => new File([new TextEncoder().encode('%PDF-1.7 report')], 'Report Q3.pdf', { type: 'application/pdf' });
+
+const month = () => {
+  const now = new Date();
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+};
 
 const png = () => new File([new TextEncoder().encode('png bytes')], 'Screenshot.png', { type: 'image/png' });
 
@@ -172,7 +181,7 @@ describe('s3-images', () => {
 
   it('uploads a pending image later, relinks every note and removes the local file', async () => {
     const { plugin, files, notes, embeds } = await start();
-    const name = pendingName('abc123', 'png');
+    const name = pendingName('a'.repeat(64), 'png');
     files.set(`Attachments/${name}`, new TextEncoder().encode('png bytes').buffer);
     notes.set('A.md', `see ![[${name}]] and ![[${name}|300]]`);
     embeds.set('A.md', [
@@ -184,17 +193,57 @@ describe('s3-images', () => {
 
     await plugin.retryPending();
 
-    expect(uploaded().url).toMatch(/\/abc123\.png$/);
+    expect(uploaded().url).toMatch(new RegExp(`/${'a'.repeat(64)}\\.png$`));
     expect(notes.get('A.md')).toMatch(
-      /^see !\[\]\(https:\/\/s3\.example\/obsidian\/\d{4}-\d{2}\/abc123\.png\) and !\[\]\(/,
+      /^see !\[\]\(https:\/\/s3\.example\/obsidian\/\d{4}-\d{2}\/a{64}\.png\) and !\[\]\(/,
     );
     expect(notes.get('B.md')).toBe('nothing here');
     expect(files.has(`Attachments/${name}`)).toBe(false);
   });
 
+  it('uploads a pasted pdf and links it by its name', async () => {
+    requestUrl.mockResolvedValue({ status: 200 });
+    const { handlers } = await start();
+    const note = editor();
+    handlers['editor-paste']?.(pasteOf([pdf()]), note as unknown as Editor, { file: tfile('Note.md') });
+
+    const hash = await sha256Hex(await pdf().arrayBuffer());
+    await vi.waitFor(() => expect(note.value).toBe(`[Report Q3.pdf](${BUCKET}/${month()}/${hash}.pdf)`));
+    expect(uploaded()).toMatchObject({ contentType: 'application/pdf' });
+    expect(uploaded().headers?.['Content-Disposition']).toBe(
+      `inline; filename*=UTF-8''${encodeURIComponent('Report Q3.pdf')}`,
+    );
+  });
+
+  it('keeps an offline pdf in the vault behind a link with its name', async () => {
+    requestUrl.mockRejectedValue(new Error('offline'));
+    const { handlers, files } = await start();
+    const note = editor();
+    handlers['editor-paste']?.(pasteOf([pdf()]), note as unknown as Editor, { file: tfile('Note.md') });
+
+    const name = pendingName(await sha256Hex(await pdf().arrayBuffer()), 'pdf', 'Report Q3');
+    await vi.waitFor(() => expect(note.value).toBe(`[[${name}|Report Q3.pdf]]`));
+    expect(files.has(`Attachments/${name}`)).toBe(true);
+  });
+
+  it('uploads a pending pdf later and relinks it by its name', async () => {
+    const { plugin, files, notes, links } = await start();
+    const name = pendingName('c'.repeat(64), 'pdf', 'Report Q3');
+    files.set(`Attachments/${name}`, new TextEncoder().encode('%PDF').buffer);
+    notes.set('A.md', `see [[${name}|Report Q3.pdf]]`);
+    links.set('A.md', [{ link: name, original: `[[${name}|Report Q3.pdf]]` }]);
+    requestUrl.mockResolvedValue({ status: 200 });
+
+    await plugin.retryPending();
+
+    expect(notes.get('A.md')).toBe(`see [Report Q3.pdf](${BUCKET}/${month()}/${'c'.repeat(64)}.pdf)`);
+    expect(uploaded().headers?.['Content-Disposition']).toContain(encodeURIComponent('Report Q3.pdf'));
+    expect(files.has(`Attachments/${name}`)).toBe(false);
+  });
+
   it('keeps a pending image and its links when the retry fails', async () => {
     const { plugin, files, notes, embeds } = await start();
-    const name = pendingName('abc123', 'png');
+    const name = pendingName('a'.repeat(64), 'png');
     files.set(`Attachments/${name}`, new TextEncoder().encode('png bytes').buffer);
     notes.set('A.md', `see ![[${name}]]`);
     embeds.set('A.md', [{ link: name, original: `![[${name}]]` }]);

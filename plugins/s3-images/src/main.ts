@@ -11,10 +11,14 @@ import {
   type TFile,
 } from 'obsidian';
 import {
+  contentDisposition,
   contentTypeOf,
   extensionOf,
-  hashOfPending,
+  isDocument,
+  isSupported,
+  linkText,
   objectUrl,
+  parsePending,
   pendingName,
   placeholder,
   replaceAll,
@@ -62,14 +66,15 @@ export default class S3Images extends Plugin {
     this.retrying = true;
     try {
       for (const file of this.app.vault.getFiles()) {
-        const hash = hashOfPending(file.name);
-        if (!hash) {
+        const pending = parsePending(file.name);
+        if (!pending) {
           continue;
         }
         try {
-          const url = objectUrl(this.settings.bucketUrl, new Date(), hash, file.extension);
-          await this.upload(url, await this.app.vault.readBinary(file), contentTypeOf(file.extension));
-          await this.relink(file, url);
+          const url = objectUrl(this.settings.bucketUrl, new Date(), pending.hash, file.extension);
+          const fileName = pending.title ? `${pending.title}.${file.extension}` : undefined;
+          await this.upload(url, await this.app.vault.readBinary(file), contentTypeOf(file.extension), fileName);
+          await this.relink(file, url, fileName ?? file.name);
           await this.app.fileManager.trashFile(file);
         } catch {
           continue;
@@ -89,44 +94,52 @@ export default class S3Images extends Plugin {
     if (evt.defaultPrevented || !this.settings.bucketUrl || !files) {
       return;
     }
-    const images = Array.from(files).filter((file) => file.type.startsWith('image/'));
-    if (images.length === 0) {
+    const uploads = Array.from(files).filter((file) => isSupported(file.type));
+    if (uploads.length === 0) {
       return;
     }
     evt.preventDefault();
-    for (const image of images) {
-      void this.insert(image, editor, info.file);
+    for (const file of uploads) {
+      void this.insert(file, editor, info.file);
     }
   }
 
-  private async insert(image: File, editor: Editor, note: TFile | null): Promise<void> {
+  private async insert(file: File, editor: Editor, note: TFile | null): Promise<void> {
     const marker = placeholder(crypto.randomUUID().slice(0, 8));
     editor.replaceSelection(marker);
 
-    const data = await image.arrayBuffer();
+    const data = await file.arrayBuffer();
     const hash = await sha256Hex(data);
-    const extension = extensionOf(image);
-    let embed: string;
+    const extension = extensionOf(file);
+    const fileName = isDocument(extension) ? file.name : undefined;
+    let reference: string;
     try {
       const url = objectUrl(this.settings.bucketUrl, new Date(), hash, extension);
-      await this.upload(url, data, contentTypeOf(extension));
-      embed = `![](${url})`;
+      await this.upload(url, data, contentTypeOf(extension), fileName);
+      reference = fileName ? `[${linkText(fileName)}](${url})` : `![](${url})`;
     } catch {
-      embed = await this.savePending(data, hash, extension, note);
-      new Notice('Image saved in the vault, it will be uploaded when the bucket is reachable');
+      reference = await this.savePending(data, hash, extension, note, fileName);
+      new Notice(`${fileName ?? 'Image'} saved in the vault, it will be uploaded when the bucket is reachable`);
     }
-    await this.replaceMarker(editor, note, marker, embed);
+    await this.replaceMarker(editor, note, marker, reference);
   }
 
-  private async upload(url: string, body: ArrayBuffer, contentType: string): Promise<void> {
-    const response = await requestUrl({ url, method: 'PUT', body, contentType, throw: false });
+  private async upload(url: string, body: ArrayBuffer, contentType: string, fileName?: string): Promise<void> {
+    const headers = fileName ? { 'Content-Disposition': contentDisposition(fileName) } : undefined;
+    const response = await requestUrl({ url, method: 'PUT', body, contentType, headers, throw: false });
     if (response.status < 200 || response.status >= 300) {
       throw new Error(`upload failed with status ${response.status}`);
     }
   }
 
-  private async savePending(data: ArrayBuffer, hash: string, extension: string, note: TFile | null): Promise<string> {
-    const name = pendingName(hash, extension);
+  private async savePending(
+    data: ArrayBuffer,
+    hash: string,
+    extension: string,
+    note: TFile | null,
+    fileName?: string,
+  ): Promise<string> {
+    const name = pendingName(hash, extension, fileName?.replace(/\.[^.]+$/, ''));
     const sourcePath = note?.path ?? '';
     const existing = this.app.vault.getFiles().find((file) => file.name === name);
     const file =
@@ -135,7 +148,9 @@ export default class S3Images extends Plugin {
         await this.app.fileManager.getAvailablePathForAttachment(name, sourcePath),
         data,
       ));
-    return `!${this.app.fileManager.generateMarkdownLink(file, sourcePath)}`;
+    return fileName
+      ? this.app.fileManager.generateMarkdownLink(file, sourcePath, undefined, fileName)
+      : `!${this.app.fileManager.generateMarkdownLink(file, sourcePath)}`;
   }
 
   private async replaceMarker(editor: Editor, note: TFile | null, marker: string, embed: string): Promise<void> {
@@ -149,14 +164,20 @@ export default class S3Images extends Plugin {
     }
   }
 
-  private async relink(target: TFile, url: string): Promise<void> {
+  private async relink(target: TFile, url: string, displayName: string): Promise<void> {
     const { metadataCache, vault } = this.app;
+    const asLink = `[${linkText(displayName)}](${url})`;
+    const asEmbed = isDocument(target.extension) ? asLink : `![](${url})`;
     for (const note of vault.getMarkdownFiles()) {
-      const originals = (metadataCache.getFileCache(note)?.embeds ?? [])
-        .filter((embed) => metadataCache.getFirstLinkpathDest(embed.link, note.path)?.path === target.path)
-        .map((embed) => embed.original);
-      if (originals.length > 0) {
-        await vault.process(note, (content) => replaceAll(content, originals, `![](${url})`));
+      const cache = metadataCache.getFileCache(note);
+      const pointing = (refs: { link: string; original: string }[] | undefined): string[] =>
+        (refs ?? [])
+          .filter((ref) => metadataCache.getFirstLinkpathDest(ref.link, note.path)?.path === target.path)
+          .map((ref) => ref.original);
+      const embeds = pointing(cache?.embeds);
+      const links = pointing(cache?.links);
+      if (embeds.length + links.length > 0) {
+        await vault.process(note, (content) => replaceAll(replaceAll(content, embeds, asEmbed), links, asLink));
       }
     }
   }

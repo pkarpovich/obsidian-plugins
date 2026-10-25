@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   contentTypeOf,
   extensionOf,
-  hashOfPending,
+  contentDisposition,
+  isSupported,
+  linkText,
   objectUrl,
+  parsePending,
   pendingName,
   placeholder,
   replaceAll,
@@ -41,9 +44,27 @@ describe('core', () => {
     );
   });
 
-  it('round-trips the hash through a pending file name', () => {
-    expect(hashOfPending(pendingName('abc123', 'png'))).toBe('abc123');
-    expect(hashOfPending('photo.png')).toBeNull();
+  it('round-trips the hash and the document title through a pending file name', () => {
+    expect(parsePending(pendingName('a'.repeat(64), 'png'))).toEqual({ hash: 'a'.repeat(64) });
+    expect(parsePending(pendingName('b'.repeat(64), 'pdf', 'Q3: report/final'))).toEqual({
+      hash: 'b'.repeat(64),
+      title: 'Q3- report-final',
+    });
+    expect(parsePending('photo.png')).toBeNull();
+    expect(parsePending('s3-pending-xyz.png')).toBeNull();
+  });
+
+  it('accepts images and pdf documents only', () => {
+    expect(isSupported('image/png')).toBe(true);
+    expect(isSupported('application/pdf')).toBe(true);
+    expect(isSupported('text/plain')).toBe(false);
+    expect(extensionOf({ name: 'Report.PDF', type: 'application/pdf' })).toBe('pdf');
+    expect(contentTypeOf('pdf')).toBe('application/pdf');
+  });
+
+  it('serves a document under its own name and escapes it in link text', () => {
+    expect(contentDisposition('Отчет Q3.pdf')).toBe(`inline; filename*=UTF-8''${encodeURIComponent('Отчет Q3.pdf')}`);
+    expect(linkText('Notes [draft].pdf')).toBe('Notes \\[draft\\].pdf');
   });
 
   it('replaces every occurrence of every original', () => {
