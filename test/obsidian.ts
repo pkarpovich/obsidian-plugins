@@ -27,6 +27,18 @@ export class Plugin {
     return Promise.resolve();
   }
 
+  private readonly cleanups: (() => unknown)[] = [];
+
+  register(callback: () => unknown): void {
+    this.cleanups.push(callback);
+  }
+
+  unload(): void {
+    for (const cleanup of this.cleanups.splice(0)) {
+      cleanup();
+    }
+  }
+
   registerEvent(_ref: EventRef): void {}
 
   registerDomEvent(_el: unknown, _type: string, _callback: () => unknown): void {}

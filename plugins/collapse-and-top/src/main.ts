@@ -1,20 +1,38 @@
 import { Plugin, type View } from 'obsidian';
 
 // The core file explorer has no command for this: its toolbar button toggles instead of
-// collapsing. `tree.setCollapseAll` and `navFileContainerEl` are internal, read out of the
-// 1.13.7 bundle, so both are optional here - a rename on upgrade costs the feature, not a throw.
+// collapsing. `tree.setCollapseAll`, `navFileContainerEl` and `headerDom.addNavButton` are
+// internal, read out of the 1.14 bundle, so all are optional here - a rename on upgrade costs
+// the feature, not a throw.
 interface FileExplorerInternals {
   tree?: { setCollapseAll?: (collapsed: boolean) => void };
   navFileContainerEl?: HTMLElement;
+  headerDom?: { addNavButton?: (icon: string, title: string, callback: () => void) => HTMLElement };
 }
 
+const NAME = 'Collapse all folders and scroll to top';
+
 export default class CollapseAndTop extends Plugin {
+  private readonly withButton = new WeakSet<View>();
+
   override async onload(): Promise<void> {
-    this.addCommand({
-      id: 'collapse-all-and-top',
-      name: 'Collapse all folders and scroll to top',
-      callback: () => this.collapseAndTop(),
-    });
+    this.addCommand({ id: 'collapse-all-and-top', name: NAME, callback: () => this.collapseAndTop() });
+    this.app.workspace.onLayoutReady(() => this.addButtons());
+    this.registerEvent(this.app.workspace.on('layout-change', () => this.addButtons()));
+  }
+
+  private addButtons(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType('file-explorer')) {
+      const view = leaf.view as View & FileExplorerInternals;
+      if (this.withButton.has(view)) {
+        continue;
+      }
+      const button = view.headerDom?.addNavButton?.('lucide-arrow-up-to-line', NAME, () => void this.collapseAndTop());
+      if (button) {
+        this.withButton.add(view);
+        this.register(() => button.remove());
+      }
+    }
   }
 
   private async collapseAndTop(): Promise<void> {
