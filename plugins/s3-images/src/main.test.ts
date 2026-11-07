@@ -5,6 +5,11 @@ import { pendingName, sha256Hex } from './core';
 import S3Images from './main';
 
 const BUCKET = 'https://s3.example/obsidian';
+const SECRETS: Record<string, string> = {
+  's3-access-key': 'AKIATESTKEY0000000001',
+  's3-secret-key': 'test-secret-access-key-0000000000000000',
+};
+const KEYS = { accessKeySecret: 's3-access-key', secretKeySecret: 's3-secret-key' };
 
 interface FakeFile {
   path: string;
@@ -64,6 +69,7 @@ function setup() {
         files.delete(file.path);
       },
     },
+    secretStorage: { getSecret: (id: string) => SECRETS[id] ?? null },
     metadataCache: {
       getFileCache: (file: FakeFile) => ({ embeds: embeds.get(file.path) ?? [], links: links.get(file.path) ?? [] }),
       getFirstLinkpathDest: (link: string) => [...files.keys()].map(tfile).find((file) => file.name === link) ?? null,
@@ -101,9 +107,9 @@ function pasteOf(files: File[]) {
   };
 }
 
-async function start(bucketUrl = BUCKET) {
+async function start(bucketUrl = BUCKET, keys: Partial<typeof KEYS> = KEYS) {
   const context = setup();
-  vi.spyOn(context.plugin, 'loadData').mockResolvedValue({ bucketUrl });
+  vi.spyOn(context.plugin, 'loadData').mockResolvedValue({ bucketUrl, ...keys });
   await context.plugin.onload();
   return context;
 }
@@ -210,7 +216,7 @@ describe('s3-images', () => {
     const hash = await sha256Hex(await pdf().arrayBuffer());
     await vi.waitFor(() => expect(note.value).toBe(`[Report Q3.pdf](${BUCKET}/${month()}/${hash}.pdf)`));
     expect(uploaded()).toMatchObject({ contentType: 'application/pdf' });
-    expect(uploaded().headers?.['Content-Disposition']).toBe(
+    expect(uploaded().headers?.['content-disposition']).toBe(
       `inline; filename*=UTF-8''${encodeURIComponent('Report Q3.pdf')}`,
     );
   });
@@ -237,7 +243,7 @@ describe('s3-images', () => {
     await plugin.retryPending();
 
     expect(notes.get('A.md')).toBe(`see [Report Q3.pdf](${BUCKET}/${month()}/${'c'.repeat(64)}.pdf)`);
-    expect(uploaded().headers?.['Content-Disposition']).toContain(encodeURIComponent('Report Q3.pdf'));
+    expect(uploaded().headers?.['content-disposition']).toContain(encodeURIComponent('Report Q3.pdf'));
     expect(files.has(`Attachments/${name}`)).toBe(false);
   });
 
@@ -253,5 +259,41 @@ describe('s3-images', () => {
 
     expect(notes.get('A.md')).toBe(`see ![[${name}]]`);
     expect(files.has(`Attachments/${name}`)).toBe(true);
+  });
+
+  it('signs the upload with AWS Signature V4 and the payload hash', async () => {
+    requestUrl.mockResolvedValue({ status: 200 });
+    const { handlers } = await start();
+    handlers['editor-paste']?.(pasteOf([png()]), editor() as unknown as Editor, { file: tfile('Note.md') });
+
+    await vi.waitFor(() => expect(requestUrl).toHaveBeenCalledOnce());
+    const headers = uploaded().headers ?? {};
+    const day = new Date().toISOString().slice(0, 10).replaceAll('-', '');
+    expect(headers['authorization']).toMatch(
+      new RegExp(
+        `^AWS4-HMAC-SHA256 Credential=AKIATESTKEY0000000001/${day}/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=[0-9a-f]{64}$`,
+      ),
+    );
+    expect(headers['x-amz-content-sha256']).toBe(await sha256Hex(await png().arrayBuffer()));
+    expect(headers['x-amz-date']).toMatch(/^\d{8}T\d{6}Z$/);
+    expect(JSON.stringify(uploaded())).not.toContain(SECRETS['s3-secret-key']);
+  });
+
+  it.each([
+    ['no keys are set', {}],
+    ['only the access key is set', { accessKeySecret: KEYS.accessKeySecret }],
+    ['a secret is missing from the keychain', { ...KEYS, secretKeySecret: 'gone' }],
+  ])('keeps the image in the vault without uploading when %s', async (_, keys) => {
+    const { handlers, files } = await start(BUCKET, keys);
+    const note = editor();
+    handlers['editor-paste']?.(pasteOf([png()]), note as unknown as Editor, { file: tfile('Note.md') });
+
+    const name = pendingName(await sha256Hex(await png().arrayBuffer()), 'png');
+    await vi.waitFor(() => expect(note.value).toBe(`![[${name}]]`));
+    expect(requestUrl).not.toHaveBeenCalled();
+    expect(files.has(`Attachments/${name}`)).toBe(true);
+    expect(Notice.messages).toEqual([
+      'Image saved in the vault: set the S3 keys in the S3 Images settings to upload it',
+    ]);
   });
 });

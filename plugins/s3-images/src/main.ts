@@ -10,6 +10,7 @@ import {
   type SettingDefinitionItem,
   type TFile,
 } from 'obsidian';
+import { AwsV4Signer } from 'aws4fetch';
 import {
   contentDisposition,
   contentTypeOf,
@@ -27,9 +28,19 @@ import {
 
 interface Settings {
   bucketUrl: string;
+  accessKeySecret: string;
+  secretKeySecret: string;
 }
 
-const DEFAULTS: Settings = { bucketUrl: '' };
+interface Credentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+}
+
+class MissingCredentials extends Error {}
+
+const DEFAULTS: Settings = { bucketUrl: '', accessKeySecret: '', secretKeySecret: '' };
+const REGION = 'us-east-1';
 const RETRY_INTERVAL_MS = 5 * 60 * 1000;
 
 export default class S3Images extends Plugin {
@@ -117,16 +128,54 @@ export default class S3Images extends Plugin {
       const url = objectUrl(this.settings.bucketUrl, new Date(), hash, extension);
       await this.upload(url, data, contentTypeOf(extension), fileName);
       reference = fileName ? `[${linkText(fileName)}](${url})` : `![](${url})`;
-    } catch {
+    } catch (error) {
       reference = await this.savePending(data, hash, extension, note, fileName);
-      new Notice(`${fileName ?? 'Image'} saved in the vault, it will be uploaded when the bucket is reachable`);
+      new Notice(
+        error instanceof MissingCredentials
+          ? `${fileName ?? 'Image'} saved in the vault: set the S3 keys in the S3 Images settings to upload it`
+          : `${fileName ?? 'Image'} saved in the vault, it will be uploaded when the bucket is reachable`,
+      );
     }
     await this.replaceMarker(editor, note, marker, reference);
   }
 
+  private credentials(): Credentials | null {
+    const { secretStorage } = this.app;
+    const accessKeyId = this.settings.accessKeySecret ? secretStorage.getSecret(this.settings.accessKeySecret) : null;
+    const secretAccessKey = this.settings.secretKeySecret
+      ? secretStorage.getSecret(this.settings.secretKeySecret)
+      : null;
+    if (!accessKeyId || !secretAccessKey) {
+      return null;
+    }
+    return { accessKeyId, secretAccessKey };
+  }
+
   private async upload(url: string, body: ArrayBuffer, contentType: string, fileName?: string): Promise<void> {
-    const headers = fileName ? { 'Content-Disposition': contentDisposition(fileName) } : undefined;
-    const response = await requestUrl({ url, method: 'PUT', body, contentType, headers, throw: false });
+    const credentials = this.credentials();
+    if (!credentials) {
+      throw new MissingCredentials('S3 keys are not set');
+    }
+    const headers: Record<string, string> = { 'X-Amz-Content-Sha256': await sha256Hex(body) };
+    if (fileName) {
+      headers['Content-Disposition'] = contentDisposition(fileName);
+    }
+    const signed = await new AwsV4Signer({
+      method: 'PUT',
+      url,
+      headers,
+      ...credentials,
+      service: 's3',
+      region: REGION,
+    }).sign();
+    const response = await requestUrl({
+      url,
+      method: 'PUT',
+      body,
+      contentType,
+      headers: Object.fromEntries(signed.headers),
+      throw: false,
+    });
     if (response.status < 200 || response.status >= 300) {
       throw new Error(`upload failed with status ${response.status}`);
     }
@@ -204,17 +253,48 @@ class S3ImagesSettingTab extends PluginSettingTab {
             value === '' || /^https?:\/\/\S+$/.test(value) ? undefined : 'Use an http:// or https:// address',
         },
       },
+      {
+        name: 'Access key ID',
+        desc: 'Kept in the Obsidian keychain on this device, never in the plugin settings.',
+        control: { type: 'secret', key: 'accessKeySecret' },
+      },
+      {
+        name: 'Secret access key',
+        desc: 'Every upload is signed with AWS Signature V4; the key needs only PutObject on the bucket.',
+        control: { type: 'secret', key: 'secretKeySecret' },
+      },
     ];
   }
 
   override getControlValue(key: string): unknown {
-    return key === 'bucketUrl' ? this.owner.settings.bucketUrl : undefined;
+    switch (key) {
+      case 'bucketUrl':
+        return this.owner.settings.bucketUrl;
+      case 'accessKeySecret':
+        return this.owner.settings.accessKeySecret;
+      case 'secretKeySecret':
+        return this.owner.settings.secretKeySecret;
+    }
+    return undefined;
   }
 
   override async setControlValue(key: string, value: unknown): Promise<void> {
-    if (key === 'bucketUrl' && typeof value === 'string') {
-      this.owner.settings.bucketUrl = value.trim();
-      await this.owner.saveSettings();
+    if (typeof value !== 'string') {
+      return;
     }
+    switch (key) {
+      case 'bucketUrl':
+        this.owner.settings.bucketUrl = value.trim();
+        break;
+      case 'accessKeySecret':
+        this.owner.settings.accessKeySecret = value;
+        break;
+      case 'secretKeySecret':
+        this.owner.settings.secretKeySecret = value;
+        break;
+      default:
+        return;
+    }
+    await this.owner.saveSettings();
   }
 }
